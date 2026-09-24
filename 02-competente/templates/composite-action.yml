@@ -1,0 +1,50 @@
+name: Build Java (Composite Action)
+description: >
+  Checks out code, sets up Java, runs Maven verify and uploads test reports.
+  Reusable across all workflows in this repository.
+
+inputs:
+  java-version:
+    description: "JDK version to use (17 or 21)"
+    required: false
+    default: "21"
+  working-directory:
+    description: "Directory containing pom.xml"
+    required: false
+    default: "app"
+
+outputs:
+  artifact-name:
+    description: "Name of the uploaded test-reports artifact"
+    value: ${{ steps.set-output.outputs.artifact-name }}
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Java ${{ inputs.java-version }}
+      uses: actions/setup-java@v4
+      with:
+        java-version: ${{ inputs.java-version }}
+        distribution: temurin
+        cache: maven
+
+    - name: Run Maven verify
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: mvn clean verify --batch-mode --no-transfer-progress
+
+    - name: Set artifact name output
+      id: set-output
+      shell: bash
+      run: echo "artifact-name=test-reports-java${{ inputs.java-version }}" >> $GITHUB_OUTPUT
+
+    - name: Upload test reports
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.set-output.outputs.artifact-name }}
+        path: ${{ inputs.working-directory }}/target/surefire-reports/
+        retention-days: 7

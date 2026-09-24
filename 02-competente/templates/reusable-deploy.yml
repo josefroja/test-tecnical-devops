@@ -1,0 +1,70 @@
+name: Reusable Deploy Workflow
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "Target environment (staging | production)"
+        required: true
+        type: string
+      image-tag:
+        description: "Full image tag to deploy (e.g. ghcr.io/org/app:sha-abc123)"
+        required: true
+        type: string
+    secrets:
+      AZURE_CLIENT_ID:
+        required: true
+      AZURE_TENANT_ID:
+        required: true
+      AZURE_SUBSCRIPTION_ID:
+        required: true
+
+jobs:
+  deploy:
+    name: Deploy to ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+
+    environment:
+      name: ${{ inputs.environment }}
+
+    permissions:
+      id-token: write    # OIDC federation — no long-lived credentials
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC — Workload Identity Federation)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        # No AZURE_CREDENTIALS secret needed — uses federated OIDC token.
+        # Azure must have a Federated Credential configured for this repo/branch.
+
+      - name: Set AKS context
+        uses: azure/aks-set-context@v3
+        with:
+          resource-group: ${{ vars.AZURE_RESOURCE_GROUP }}
+          cluster-name: ${{ vars.AKS_CLUSTER_NAME }}
+
+      - name: Deploy with Helm
+        run: |
+          helm upgrade --install devops-app helm/devops-app \
+            --namespace ${{ inputs.environment }} \
+            --create-namespace \
+            -f helm/devops-app/values.yaml \
+            -f helm/devops-app/values-${{ inputs.environment }}.yaml \
+            --set image.tag="${{ inputs.image-tag }}" \
+            --wait --timeout 5m
+
+      - name: Verify deployment
+        run: |
+          kubectl rollout status deployment/devops-app \
+            -n ${{ inputs.environment }} --timeout=3m
+          kubectl get pods -n ${{ inputs.environment }}
+
+      - name: Azure Logout
+        if: always()
+        run: az logout

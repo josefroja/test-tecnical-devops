@@ -1,0 +1,41 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: devops-app
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: devops-app
+    environment: production
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/<org>/<repo>.git
+    targetRevision: main
+    path: helm/devops-app
+    helm:
+      valueFiles:
+        - values.yaml
+        - values-prod.yaml
+      parameters:
+        - name: image.tag
+          value: "REPLACE_WITH_SHA"  # Set by CI pipeline via ArgoCD Image Updater or CD step
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: production
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+
+  # Health check override for the Quarkus app
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas    # Ignore HPA-managed replica count

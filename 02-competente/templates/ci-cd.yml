@@ -1,0 +1,106 @@
+name: CI/CD Pipeline — Competente
+
+on:
+  push:
+    branches: [main, "feature/**"]
+  pull_request:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/devops-app
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Matrix build: Java 17 + 21 on Linux + Windows
+  # ─────────────────────────────────────────────────────────────────────────────
+  build-matrix:
+    name: Build (${{ matrix.os }} / Java ${{ matrix.java }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        java: [17, 21]
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and Test (Composite Action)
+        uses: ./.github/actions/build-java
+        with:
+          java-version: ${{ matrix.java }}
+          working-directory: app
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Build Docker image and push to GHCR
+  # ─────────────────────────────────────────────────────────────────────────────
+  build-image:
+    name: Build and Push Docker Image
+    runs-on: ubuntu-latest
+    needs: build-matrix
+    if: github.ref == 'refs/heads/main'
+
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      digest: ${{ steps.push.outputs.digest }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=sha-
+            type=raw,value=latest
+
+      - name: Build and push
+        id: push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: true       # Generate SLSA provenance attestation
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Security Scan (calls reusable workflow)
+  # ─────────────────────────────────────────────────────────────────────────────
+  security:
+    name: Security Scan
+    needs: build-image
+    uses: ./.github/workflows/security-scan.yml
+    secrets: inherit
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Deploy via Reusable Workflow (OIDC, no long-lived secrets)
+  # ─────────────────────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to Production
+    needs: [build-image, security]
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/reusable-deploy.yml
+    with:
+      environment: production
+      image-tag: ${{ needs.build-image.outputs.image-tag }}
+    secrets:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
